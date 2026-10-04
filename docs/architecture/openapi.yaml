@@ -1,0 +1,927 @@
+openapi: 3.0.3
+info:
+  title: Literary Platform API
+  description: |
+    REST API платформы для публикации и последовательного выпуска литературных произведений (MVP).
+
+    Аутентификация: JWT access token в заголовке `Authorization: Bearer <token>`.
+    Публичные операции помечены `security: []`.
+
+    Расширение `x-module` показывает, какой модуль монолита отвечает за операцию.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальная разработка
+
+tags:
+  - name: Auth
+    description: Регистрация и вход
+  - name: Catalog
+    description: Каталог, поиск и блок «Горячее»
+  - name: Works
+    description: Произведения
+  - name: Chapters
+    description: Главы и публикация
+  - name: Comments
+    description: Комментарии
+  - name: Library
+    description: Избранное и прогресс чтения
+  - name: Promotions
+    description: Платное продвижение
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация
+      operationId: register
+      security: []
+      x-module: accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход, получение access и refresh token
+      operationId: login
+      security: []
+      x-module: accounts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /catalog:
+    get:
+      tags: [Catalog]
+      summary: Каталог и поиск по каталогу
+      description: |
+        Возвращает только опубликованные и не заблокированные модерацией произведения.
+        Поиск, фильтрацию и пагинацию выполняет модуль «Каталог»; данные произведений он получает у модуля «Работы».
+      operationId: listCatalog
+      security: []
+      x-module: catalog
+      parameters:
+        - name: q
+          in: query
+          description: Поисковая строка (название, автор, описание)
+          schema:
+            type: string
+            maxLength: 200
+        - name: genre
+          in: query
+          description: Фильтр по жанру
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: Фильтр по тегу
+          schema:
+            type: string
+        - name: sort
+          in: query
+          description: Порядок сортировки обычного списка. Блок «Горячее» запрашивается отдельно (`GET /catalog/hot`).
+          schema:
+            type: string
+            enum: [newest, updated]
+            default: newest
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Страница произведений
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /catalog/hot:
+    get:
+      tags: [Catalog]
+      summary: Блок «Горячее» (закреплён вверху каталога)
+      description: |
+        Возвращает произведения с активным оплаченным продвижением (статус `ACTIVE`).
+        Клиент показывает этот блок над обычным списком каталога.
+        Количество мест в блоке ограничено параметром `limit`.
+      operationId: listHotWorks
+      security: []
+      x-module: catalog
+      parameters:
+        - name: limit
+          in: query
+          description: Максимальное число работ в блоке
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 10
+      responses:
+        '200':
+          description: Список продвигаемых произведений
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /works:
+    post:
+      tags: [Works]
+      summary: Создание произведения
+      operationId: createWork
+      x-module: works
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkCreateRequest'
+      responses:
+        '201':
+          description: Произведение создано, текущий пользователь становится автором
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /works/{workId}:
+    get:
+      tags: [Works]
+      summary: Получить произведение и оглавление
+      description: |
+        Возвращает карточку произведения и список глав.
+        Читатели видят только опубликованные главы, автор — все, включая черновики.
+      operationId: getWork
+      security:
+        - {}
+        - bearerAuth: []
+      x-module: works
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      responses:
+        '200':
+          description: Произведение
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /works/{workId}/chapters:
+    post:
+      tags: [Chapters]
+      summary: Добавление главы
+      description: |
+        Доступно только автору произведения.
+        Режим публикации задаётся полем `publishMode`: черновик, сразу или по расписанию.
+      operationId: createChapter
+      x-module: works
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChapterCreateRequest'
+      responses:
+        '201':
+          description: Глава создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Chapter'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /works/{workId}/chapters/{chapterId}:
+    get:
+      tags: [Chapters]
+      summary: Прочитать главу
+      description: |
+        Возвращает главу вместе с текстом.
+        Опубликованные главы доступны всем, в том числе без входа.
+        Черновики и запланированные главы видит только автор произведения; остальным возвращается 404.
+      operationId: getChapter
+      security:
+        - {}
+        - bearerAuth: []
+      x-module: works
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+        - $ref: '#/components/parameters/ChapterId'
+      responses:
+        '200':
+          description: Глава с текстом
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChapterContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /comments:
+    post:
+      tags: [Comments]
+      summary: Оставить комментарий
+      description: Произведение, к которому относится комментарий, передаётся в теле запроса (`workId`).
+      operationId: createComment
+      x-module: comments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreateRequest'
+      responses:
+        '201':
+          description: Комментарий создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /promotions:
+    post:
+      tags: [Promotions]
+      summary: Заказать продвижение
+      description: |
+        Создаёт заказ в статусе `PENDING_PAYMENT` и возвращает ссылку на оплату у платёжного провайдера.
+        Продвижение активируется после подтверждения оплаты провайдером.
+        Заказать продвижение может только автор произведения.
+      operationId: createPromotion
+      x-module: promotions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromotionCreateRequest'
+      responses:
+        '201':
+          description: Заказ создан, ожидает оплаты
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Promotion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /webhooks/payments:
+    post:
+      tags: [Promotions]
+      summary: Подтверждение оплаты от платёжного провайдера
+      description: |
+        Вызывается платёжным провайдером, а не пользователем.
+        Подлинность запроса проверяется по подписи в заголовке `X-Signature`
+        (HMAC от тела запроса с общим секретом), поэтому JWT не используется.
+
+        При статусе `PAID` платёж помечается оплаченным, продвижение переходит в `ACTIVE`
+        и получает `startsAt` / `endsAt`. При `FAILED` платёж помечается неуспешным.
+
+        Операция идемпотентна: повторное уведомление с тем же `providerPaymentId`
+        не меняет состояние и возвращает 200.
+      operationId: handlePaymentWebhook
+      security: []
+      x-module: promotions
+      parameters:
+        - name: X-Signature
+          in: header
+          required: true
+          description: Подпись тела запроса, вычисленная провайдером
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhookEvent'
+      responses:
+        '200':
+          description: Уведомление принято (в том числе повторное)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /me/library/favorites:
+    get:
+      tags: [Library]
+      summary: Посмотреть избранные работы
+      operationId: listFavorites
+      x-module: library
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Страница избранных произведений
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /me/library/favorites/{workId}:
+    put:
+      tags: [Library]
+      summary: Добавить работу в избранное
+      description: Идемпотентная операция, повторный вызов не создаёт дубликат.
+      operationId: addFavorite
+      x-module: library
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      responses:
+        '204':
+          description: Работа в избранном
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /me/library/reading-progress/{workId}:
+    get:
+      tags: [Library]
+      summary: Получить позицию чтения
+      description: |
+        Возвращает последнюю сохранённую позицию пользователя в произведении.
+        Если пользователь ещё не начинал читать произведение, возвращается 404.
+      operationId: getReadingProgress
+      x-module: library
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      responses:
+        '200':
+          description: Сохранённая позиция
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingProgress'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Library]
+      summary: Сохранение позиции чтения
+      description: |
+        Хранится одна запись на пару «пользователь — произведение».
+        Повторный вызов перезаписывает позицию (побеждает последнее значение).
+      operationId: saveReadingProgress
+      x-module: library
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadingProgressRequest'
+      responses:
+        '200':
+          description: Позиция сохранена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadingProgress'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    WorkId:
+      name: workId
+      in: path
+      required: true
+      description: Идентификатор произведения
+      schema:
+        type: string
+        format: uuid
+    ChapterId:
+      name: chapterId
+      in: path
+      required: true
+      description: Идентификатор главы
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      description: Номер страницы, начиная с 0
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      description: Размер страницы
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос или ошибка валидации
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Не авторизован или токен недействителен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Конфликт состояния (например, email уже занят)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [email, username, password]
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        tokenType:
+          type: string
+          example: Bearer
+        expiresIn:
+          type: integer
+          description: Время жизни access token в секундах
+          example: 900
+
+    UserProfile:
+      type: object
+      required: [id, username, email, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+
+    WorkCreateRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+        genres:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    Work:
+      type: object
+      required: [id, title, authorId, authorName, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        genres:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        coverUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Ссылка на обложку в объектном хранилище
+        authorId:
+          type: string
+          format: uuid
+        authorName:
+          type: string
+        status:
+          type: string
+          enum: [IN_PROGRESS, COMPLETED, FROZEN]
+        chapters:
+          type: array
+          description: Оглавление по возрастанию номера; черновики видны только автору
+          items:
+            $ref: '#/components/schemas/ChapterSummary'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WorkSummary:
+      type: object
+      required: [id, title, authorName]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        coverUrl:
+          type: string
+          format: uri
+          nullable: true
+        authorName:
+          type: string
+        genres:
+          type: array
+          items:
+            type: string
+
+    WorkPage:
+      type: object
+      required: [items, page, size, totalElements, totalPages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkSummary'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalElements:
+          type: integer
+          format: int64
+        totalPages:
+          type: integer
+
+    ChapterCreateRequest:
+      type: object
+      required: [title, content, publishMode]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        content:
+          type: string
+          description: Текст главы
+        publishMode:
+          type: string
+          enum: [DRAFT, IMMEDIATE, SCHEDULED]
+          description: Сохранить как черновик, опубликовать сразу или по расписанию
+        publishAt:
+          type: string
+          format: date-time
+          description: Обязательно при `publishMode = SCHEDULED`, время должно быть в будущем
+
+    Chapter:
+      type: object
+      required: [id, workId, number, title, status, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        number:
+          type: integer
+          description: Порядковый номер главы в произведении
+        title:
+          type: string
+        status:
+          type: string
+          enum: [DRAFT, SCHEDULED, PUBLISHED]
+        publishAt:
+          type: string
+          format: date-time
+          nullable: true
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ChapterSummary:
+      type: object
+      required: [id, number, title, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        number:
+          type: integer
+        title:
+          type: string
+        status:
+          type: string
+          enum: [DRAFT, SCHEDULED, PUBLISHED]
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ChapterContent:
+      allOf:
+        - $ref: '#/components/schemas/Chapter'
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+              description: Текст главы
+
+    CommentCreateRequest:
+      type: object
+      required: [workId, text]
+      properties:
+        workId:
+          type: string
+          format: uuid
+          description: Произведение, которое комментируют
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    Comment:
+      type: object
+      required: [id, workId, authorId, authorName, text, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        authorId:
+          type: string
+          format: uuid
+        authorName:
+          type: string
+        text:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    PromotionCreateRequest:
+      type: object
+      required: [workId, durationDays]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        durationDays:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: Срок продвижения в днях
+
+    Promotion:
+      type: object
+      required: [id, workId, status, durationDays, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING_PAYMENT, ACTIVE, EXPIRED, CANCELLED]
+        durationDays:
+          type: integer
+        paymentUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Ссылка на оплату (только для статуса PENDING_PAYMENT)
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+        endsAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    PaymentWebhookEvent:
+      type: object
+      description: Обобщённый формат уведомления; у конкретного провайдера названия полей могут отличаться
+      required: [providerPaymentId, status, amount, currency]
+      properties:
+        providerPaymentId:
+          type: string
+          description: Идентификатор платежа на стороне провайдера
+        status:
+          type: string
+          enum: [PAID, FAILED]
+        amount:
+          type: number
+          format: double
+          example: 499.00
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          example: RUB
+
+    ReadingProgressRequest:
+      type: object
+      required: [chapterId, position]
+      properties:
+        chapterId:
+          type: string
+          format: uuid
+        position:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Позиция внутри главы как доля от 0 до 1
+
+    ReadingProgress:
+      type: object
+      required: [workId, chapterId, position, updatedAt]
+      properties:
+        workId:
+          type: string
+          format: uuid
+        chapterId:
+          type: string
+          format: uuid
+        position:
+          type: number
+          format: double
+        updatedAt:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+        traceId:
+          type: string
+          description: Идентификатор запроса для поиска в логах; тот же id сервер пишет в заголовок X-Trace-Id
+          example: 4bf92f3577b34da6a3ce929d0e0e4736
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
