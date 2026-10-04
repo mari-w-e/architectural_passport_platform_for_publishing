@@ -14,7 +14,8 @@
 |---|---|
 | [ADR-001.md](docs/architecture/ADR-001.md) | Выбор архитектуры: модульный монолит |
 | [c4-diagram.drawio](docs/architecture/c4-diagram.drawio) | C4: System Context, Container, модули backend |
-| [openapi.yaml](docs/architecture/openapi.yaml) | Контракт REST API (OpenAPI 3.0.3) |
+| [openapi.yaml](docs/architecture/openapi.yaml) | Контракт REST API |
 | [er-diagram.dbml](docs/architecture/er-diagram.dbml) | Исходник полной ER-диаграммы |
 | [er-diagram.png](docs/architecture/er-diagram.png) | Полная ER-диаграмма |
-| [er-diagram-simple.png](docs/architecture/er-diagram-simple.png) | Упрощённая ER-диаграмма: только основные сущности и атрибуты |
+ | [er-diagram-simple.dbml](docs/architecture/er-diagram-simple.dbml) | Исходник упрощенной ER-диаграммы |
+| [er-diagram-simple.png](docs/architecture/er-diagram-simple.png) | Упрощённая ER-диаграмма (основные сущности и атрибуты) |
