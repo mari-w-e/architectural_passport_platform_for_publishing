@@ -1,0 +1,315 @@
+Project literary_platform {
+  database_type: 'PostgreSQL'
+  Note: 'Модель данных платформы публикации произведений (MVP). Таблицы сгруппированы по модулям монолита.'
+}
+
+// ---------- Перечисления ----------
+
+enum user_role {
+  USER
+  MODERATOR
+}
+
+enum work_status {
+  IN_PROGRESS
+  COMPLETED
+  FROZEN
+}
+
+enum chapter_status {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+}
+
+enum promotion_status {
+  PENDING_PAYMENT
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum payment_status {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum report_target_type {
+  WORK
+  CHAPTER
+  COMMENT
+  USER
+}
+
+enum report_status {
+  OPEN
+  RESOLVED
+  REJECTED
+}
+
+enum notification_status {
+  PENDING
+  SENT
+  FAILED
+}
+
+// ---------- Модуль: Аккаунты ----------
+
+Table users {
+  id uuid [pk]
+  email varchar(255) [unique, not null]
+  username varchar(50) [unique, not null]
+  password_hash varchar(255) [not null]
+  role user_role [not null, default: 'USER']
+  is_blocked boolean [not null, default: false]
+  created_at timestamp [not null, default: `now()`]
+}
+
+
+// ---------- Модуль: Работы ----------
+
+Table works {
+  id uuid [pk]
+  author_id uuid [not null]
+  title varchar(200) [not null]
+  description varchar(1500) [not null]
+  cover_key varchar(255) [not null, note: 'Ключ файла обложки в S3']
+  status work_status [not null, default: 'IN_PROGRESS']
+  is_hidden boolean [not null, default: false, note: 'Скрыто модерацией']
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    author_id
+  }
+}
+
+Table chapters {
+  id uuid [pk]
+  work_id uuid [not null]
+  number int [not null]
+  title varchar(200) [not null]
+  content text [not null]
+  status chapter_status [not null, default: 'DRAFT']
+  publish_at timestamp [note: 'Время публикации по расписанию']
+  published_at timestamp
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (work_id, number) [unique]
+    (status, publish_at) [note: 'Для планировщика публикации']
+  }
+}
+
+Table genres {
+  id uuid [pk]
+  name varchar(100) [unique, not null]
+}
+
+Table work_genres {
+  work_id uuid [not null]
+  genre_id uuid [not null]
+
+  indexes {
+    (work_id, genre_id) [pk]
+  }
+}
+
+Table tags {
+  id uuid [pk]
+  name varchar(100) [unique, not null]
+}
+
+Table work_tags {
+  work_id uuid [not null]
+  tag_id uuid [not null]
+
+  indexes {
+    (work_id, tag_id) [pk]
+  }
+}
+
+// ---------- Модуль: Комментарии ----------
+
+Table comments {
+  id uuid [pk]
+  work_id uuid [not null]
+  author_id uuid [not null]
+  text text [not null]
+  is_hidden boolean [not null, default: false, note: 'Скрыто модерацией']
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (work_id, created_at)
+  }
+}
+
+// ---------- Модуль: Библиотека ----------
+
+Table favorites {
+  user_id uuid [not null]
+  work_id uuid [not null]
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (user_id, work_id) [pk]
+  }
+}
+
+Table reading_progress {
+  user_id uuid [not null]
+  work_id uuid [not null]
+  chapter_id uuid [not null]
+  position float [not null, note: 'Доля главы от 0 до 1']
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (user_id, work_id) [pk]
+  }
+}
+
+Table subscriptions {
+  subscriber_id uuid [not null]
+  author_id uuid [not null]
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (subscriber_id, author_id) [pk]
+    author_id
+  }
+}
+
+// ---------- Модуль: Продвижение ----------
+
+Table promotions {
+  id uuid [pk]
+  work_id uuid [not null]
+  customer_id uuid [not null]
+  status promotion_status [not null, default: 'PENDING_PAYMENT']
+  duration_days int [not null]
+  starts_at timestamp
+  ends_at timestamp
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (status, ends_at) [note: 'Для блока Горячее и планировщика истечения']
+  }
+}
+
+Table payments {
+  id uuid [pk]
+  promotion_id uuid [not null]
+  provider_payment_id varchar(255) [unique, not null, note: 'Защита от повторного webhook']
+  amount decimal(12,2) [not null]
+  currency varchar(3) [not null]
+  status payment_status [not null, default: 'PENDING']
+  created_at timestamp [not null, default: `now()`]
+  paid_at timestamp
+}
+
+// ---------- Модуль: Модерация ----------
+
+Table reports {
+  id uuid [pk]
+  reporter_id uuid [not null]
+  resolved_by uuid
+  target_type report_target_type [not null]
+  target_id uuid [not null, note: 'Без внешнего ключа: цель может быть работой, главой, комментарием или пользователем']
+  reason text [not null]
+  status report_status [not null, default: 'OPEN']
+  decision text
+  created_at timestamp [not null, default: `now()`]
+  resolved_at timestamp
+
+  indexes {
+    (status, created_at)
+    (target_type, target_id)
+  }
+}
+
+// ---------- Модуль: Уведомления ----------
+
+Table notifications {
+  id uuid [pk]
+  user_id uuid [not null]
+  type varchar(50) [not null]
+  payload jsonb [not null]
+  status notification_status [not null, default: 'PENDING']
+  created_at timestamp [not null, default: `now()`]
+  sent_at timestamp
+
+  indexes {
+    (status, created_at) [note: 'Очередь отправки писем']
+  }
+}
+
+// ---------- Связи ----------
+
+
+Ref: works.author_id > users.id
+Ref: chapters.work_id > works.id [delete: cascade]
+Ref: work_genres.work_id > works.id [delete: cascade]
+Ref: work_genres.genre_id > genres.id
+Ref: work_tags.work_id > works.id [delete: cascade]
+Ref: work_tags.tag_id > tags.id
+
+Ref: comments.work_id > works.id [delete: cascade]
+Ref: comments.author_id > users.id
+
+Ref: favorites.user_id > users.id [delete: cascade]
+Ref: favorites.work_id > works.id [delete: cascade]
+Ref: reading_progress.user_id > users.id [delete: cascade]
+Ref: reading_progress.work_id > works.id [delete: cascade]
+Ref: reading_progress.chapter_id > chapters.id [delete: cascade]
+Ref: subscriptions.subscriber_id > users.id [delete: cascade]
+Ref: subscriptions.author_id > users.id [delete: cascade]
+
+Ref: promotions.work_id > works.id
+Ref: promotions.customer_id > users.id
+Ref: payments.promotion_id > promotions.id
+
+Ref: reports.reporter_id > users.id
+Ref: reports.resolved_by > users.id
+
+Ref: notifications.user_id > users.id [delete: cascade]
+
+// ---------- Группы по модулям ----------
+
+TableGroup accounts_module {
+  users
+}
+
+TableGroup works_module {
+  works
+  chapters
+  genres
+  work_genres
+  tags
+  work_tags
+}
+
+TableGroup comments_module {
+  comments
+}
+
+TableGroup library_module {
+  favorites
+  reading_progress
+  subscriptions
+}
+
+TableGroup promotions_module {
+  promotions
+  payments
+}
+
+TableGroup moderation_module {
+  reports
+}
+
+TableGroup notifications_module {
+  notifications
+}
